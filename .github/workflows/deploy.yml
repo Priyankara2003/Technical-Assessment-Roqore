@@ -16,21 +16,30 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
 
-      - name: Install deps
+      - name: Install dependencies
         run: npm ci
 
       - name: Run tests
         run: npm test --if-present
 
-      - name: Build
+      - name: Build NestJS app
         run: npm run build
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deploy
+          cp -r dist deploy/
+          cp package.json deploy/
+          cp package-lock.json deploy/
+          cp ecosystem.config.js deploy/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist
+          name: nestjs-app
+          path: deploy/
 
   deploy:
     needs: build
@@ -39,30 +48,52 @@ jobs:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: dist
-          path: dist
+          name: nestjs-app
+          path: deploy/
 
-      - name: Deploy via SSH (rsync)
+      - name: Deploy to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
-          source: |
-            dist/**
-            package.json
-            package-lock.json
-            ecosystem.config.js
-          target: "/var/www/app/"
+          source: "deploy/*"
+          target: "/var/www/"
+          strip_components: 1
+          rm: false
 
-      - name: Restart app (ssh)
-        uses: appleboy/ssh-action@v0.1.7
+      - name: Install dependencies and restart app
+        uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            cd /var/www/app
+            cd /var/www/deploy
+            
+            # Install production dependencies
             npm ci --omit=dev
-            pm2 reload ecosystem.config.js --update-env || pm2 start ecosystem.config.js
+            
+            # Stop existing PM2 process if any
+            pm2 delete nestjs-app || true
+            
+            # Start the app with PM2
+            pm2 start ecosystem.config.js
+            
+            # Save PM2 process list
+            pm2 save
+            
+            # Show status
+            pm2 status
+
+      - name: Health check
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            sleep 5
+            pm2 status
+            pm2 logs nestjs-app --lines 20 --nostream
