@@ -29,13 +29,26 @@ jobs:
 
       - name: Create deployment package
         run: |
+          echo "==== Creating deployment package ===="
           mkdir -p deploy-package
+          
+          echo "==== Copying dist folder ===="
           cp -r dist deploy-package/
+          
+          echo "==== Copying package files ===="
           cp package.json deploy-package/
           cp package-lock.json deploy-package/
+          
           if [ -f ecosystem.config.js ]; then
+            echo "==== Copying ecosystem.config.js ===="
             cp ecosystem.config.js deploy-package/
           fi
+          
+          echo "==== Deployment package contents ===="
+          ls -la deploy-package/
+          
+          echo "==== Dist folder contents ===="
+          ls -la deploy-package/dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -60,10 +73,11 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
-          source: "deploy-package/*"
+          source: "deploy-package/"
           target: "~/roqore-app/"
-          strip_components: 1
+          strip_components: 0
           overwrite: true
+          rm: true
 
       - name: Install dependencies and restart app
         uses: appleboy/ssh-action@v1.0.0
@@ -72,37 +86,52 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            # Navigate to app directory
+            echo "==== Checking deployment files ===="
+            ls -la ~/roqore-app/
+            
             cd ~/roqore-app/deploy-package
+            echo "==== Files in deploy-package ===="
+            ls -la
             
-            # Create logs directory if it doesn't exist
-            mkdir -p logs
+            echo "==== Checking dist folder ===="
+            ls -la dist/ || echo "No dist folder found!"
             
-            # Install production dependencies
-            echo "Installing dependencies..."
+            echo "==== Checking for main.js ===="
+            if [ -f dist/main.js ]; then
+              echo "✅ main.js found"
+            else
+              echo "❌ main.js NOT found!"
+              exit 1
+            fi
+            
+            echo "==== Installing dependencies ===="
             npm ci --omit=dev
             
-            # Check if ecosystem.config.js exists
+            echo "==== Creating logs directory ===="
+            mkdir -p logs
+            
+            echo "==== Deleting old PM2 process ===="
+            pm2 delete roqore-backend || echo "No existing process"
+            
+            echo "==== Starting application ===="
             if [ -f ecosystem.config.js ]; then
               echo "Using ecosystem.config.js"
-              pm2 delete roqore-backend || echo "No existing process to delete"
+              cat ecosystem.config.js
               pm2 start ecosystem.config.js
             else
-              echo "No ecosystem.config.js found, starting with direct command"
-              pm2 delete roqore-backend || echo "No existing process to delete"
+              echo "Starting directly with main.js"
               pm2 start dist/main.js --name roqore-backend
             fi
             
-            # Save PM2 process list
+            echo "==== Saving PM2 list ===="
             pm2 save --force
             
-            # Show status
-            echo "Deployment complete. Current PM2 status:"
+            echo "==== PM2 Status ===="
             pm2 status
             
-            # Show recent logs
-            echo "Recent logs:"
-            pm2 logs roqore-backend --lines 30 --nostream
+            echo "==== Checking logs ===="
+            sleep 2
+            pm2 logs roqore-backend --lines 30 --nostream || echo "No logs yet"
 
       - name: Verify deployment
         uses: appleboy/ssh-action@v1.0.0
