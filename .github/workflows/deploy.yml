@@ -60,5 +60,5 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd /var/www/app
-            npm ci --production
-            pm2 reload all
+            npm ci --omit=dev
+            pm2 reload ecosystem.config.js --update-env || pm2 start ecosystem.config.js
