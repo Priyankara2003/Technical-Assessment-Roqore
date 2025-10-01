@@ -147,8 +147,9 @@ jobs:
             pm2 status
             
             echo "Checking if app is responding..."
-            if pm2 list | grep -q "online.*roqore-backend"; then
+            if pm2 list | grep -q "roqore-backend.*online"; then
               echo "✅ App is running successfully!"
+              pm2 logs roqore-backend --lines 20 --nostream
             else
               echo "❌ App is not running properly"
               pm2 logs roqore-backend --lines 50 --nostream
