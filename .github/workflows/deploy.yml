@@ -1,0 +1,157 @@
+name: CI/CD Deploy
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test --if-present
+
+      - name: Build NestJS app
+        run: npm run build
+
+      - name: Create deployment package
+        run: |
+          echo "==== Creating deployment package ===="
+          mkdir -p deploy-package
+          
+          echo "==== Copying dist folder ===="
+          cp -r dist deploy-package/
+          
+          echo "==== Copying package files ===="
+          cp package.json deploy-package/
+          cp package-lock.json deploy-package/
+          
+          if [ -f ecosystem.config.js ]; then
+            echo "==== Copying ecosystem.config.js ===="
+            cp ecosystem.config.js deploy-package/
+          fi
+          
+          echo "==== Deployment package contents ===="
+          ls -la deploy-package/
+          
+          echo "==== Dist folder contents ===="
+          ls -la deploy-package/dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nestjs-app
+          path: deploy-package/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nestjs-app
+          path: deploy-package/
+
+      - name: Deploy to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 22
+          source: "deploy-package/"
+          target: "~/roqore-app/"
+          strip_components: 0
+          overwrite: true
+          rm: true
+
+      - name: Install dependencies and restart app
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "==== Checking deployment files ===="
+            ls -la ~/roqore-app/
+            
+            cd ~/roqore-app/deploy-package
+            echo "==== Files in deploy-package ===="
+            ls -la
+            
+            echo "==== Checking dist folder ===="
+            ls -la dist/ || echo "No dist folder found!"
+            
+            echo "==== Checking for main.js ===="
+            if [ -f dist/main.js ]; then
+              echo "✅ main.js found"
+            else
+              echo "❌ main.js NOT found!"
+              exit 1
+            fi
+            
+            echo "==== Installing dependencies ===="
+            npm ci --omit=dev
+            
+            echo "==== Creating logs directory ===="
+            mkdir -p logs
+            
+            echo "==== Deleting old PM2 process ===="
+            pm2 delete roqore-backend || echo "No existing process"
+            
+            echo "==== Starting application ===="
+            if [ -f ecosystem.config.js ]; then
+              echo "Using ecosystem.config.js"
+              cat ecosystem.config.js
+              pm2 start ecosystem.config.js
+            else
+              echo "Starting directly with main.js"
+              pm2 start dist/main.js --name roqore-backend
+            fi
+            
+            echo "==== Saving PM2 list ===="
+            pm2 save --force
+            
+            echo "==== PM2 Status ===="
+            pm2 status
+            
+            echo "==== Checking logs ===="
+            sleep 2
+            pm2 logs roqore-backend --lines 30 --nostream || echo "No logs yet"
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "Waiting 5 seconds for app to stabilize..."
+            sleep 5
+            
+            echo "Final PM2 status:"
+            pm2 status
+            
+            echo "Checking if app is responding..."
+            if pm2 list | grep -q "roqore-backend.*online"; then
+              echo "✅ App is running successfully!"
+              pm2 logs roqore-backend --lines 20 --nostream
+            else
+              echo "❌ App is not running properly"
+              pm2 logs roqore-backend --lines 50 --nostream
+              exit 1
+            fi
