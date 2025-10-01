@@ -59,7 +59,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
           source: "deploy/*"
-          target: "/var/www/"
+          target: "~/app/"
           strip_components: 1
           rm: false
 
