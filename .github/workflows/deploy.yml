@@ -29,17 +29,19 @@ jobs:
 
       - name: Create deployment package
         run: |
-          mkdir -p deploy
-          cp -r dist deploy/
-          cp package.json deploy/
-          cp package-lock.json deploy/
-          cp ecosystem.config.js deploy/
+          mkdir -p deploy-package
+          cp -r dist deploy-package/
+          cp package.json deploy-package/
+          cp package-lock.json deploy-package/
+          if [ -f ecosystem.config.js ]; then
+            cp ecosystem.config.js deploy-package/
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: nestjs-app
-          path: deploy/
+          path: deploy-package/
 
   deploy:
     needs: build
@@ -49,7 +51,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: nestjs-app
-          path: deploy/
+          path: deploy-package/
 
       - name: Deploy to EC2
         uses: appleboy/scp-action@v0.1.7
@@ -58,10 +60,10 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
-          source: "deploy/*"
-          target: "~/app/"
+          source: "deploy-package/*"
+          target: "~/roqore-app/"
           strip_components: 1
-          rm: false
+          overwrite: true
 
       - name: Install dependencies and restart app
         uses: appleboy/ssh-action@v1.0.0
@@ -70,30 +72,56 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            cd /var/www/deploy
+            # Navigate to app directory
+            cd ~/roqore-app/deploy-package
+            
+            # Create logs directory if it doesn't exist
+            mkdir -p logs
             
             # Install production dependencies
+            echo "Installing dependencies..."
             npm ci --omit=dev
             
-            # Stop existing PM2 process if any
-            pm2 delete nestjs-app || true
-            
-            # Start the app with PM2
-            pm2 start ecosystem.config.js
+            # Check if ecosystem.config.js exists
+            if [ -f ecosystem.config.js ]; then
+              echo "Using ecosystem.config.js"
+              pm2 delete roqore-backend || echo "No existing process to delete"
+              pm2 start ecosystem.config.js
+            else
+              echo "No ecosystem.config.js found, starting with direct command"
+              pm2 delete roqore-backend || echo "No existing process to delete"
+              pm2 start dist/main.js --name roqore-backend
+            fi
             
             # Save PM2 process list
-            pm2 save
+            pm2 save --force
             
             # Show status
+            echo "Deployment complete. Current PM2 status:"
             pm2 status
+            
+            # Show recent logs
+            echo "Recent logs:"
+            pm2 logs roqore-backend --lines 30 --nostream
 
-      - name: Health check
+      - name: Verify deployment
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            echo "Waiting 5 seconds for app to stabilize..."
             sleep 5
+            
+            echo "Final PM2 status:"
             pm2 status
-            pm2 logs nestjs-app --lines 20 --nostream
+            
+            echo "Checking if app is responding..."
+            if pm2 list | grep -q "online.*roqore-backend"; then
+              echo "✅ App is running successfully!"
+            else
+              echo "❌ App is not running properly"
+              pm2 logs roqore-backend --lines 50 --nostream
+              exit 1
+            fi
