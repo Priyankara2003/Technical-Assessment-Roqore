@@ -49,7 +49,11 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
-          source: "dist/**,package.json,ecosystem.config.js"
+          source: |
+            dist/**
+            package.json
+            package-lock.json
+            ecosystem.config.js
           target: "/var/www/app/"
 
       - name: Restart app (ssh)
